@@ -1,0 +1,41 @@
+{
+  "name": "deepseek-chan-sleep-shutdown",
+  "version": "0.1.0",
+  "description": "Night & moon themed shutdown plugin for DeepSeek Harness — a sleepy DeepSeek-chan whale mascot button. 深夜月亮主题：鲸鱼娘睡觉形象按钮，任务完成后自动关机（可拖动、自动避让、倒计时可取消）。",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "assets/mascot-sleep.webp",
+    "assets/mascot-awake.webp",
+    "LICENSE",
+    "README.md",
+    "README.en.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "shutdown",
+    "关机",
+    "mascot",
+    "moon"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/weiplwei/DeepSeek-chan-sleep-shutdown.git"
+  },
+  "homepage": "https://github.com/weiplwei/DeepSeek-chan-sleep-shutdown",
+  "bugs": {
+    "url": "https://github.com/weiplwei/DeepSeek-chan-sleep-shutdown/issues"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

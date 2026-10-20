@@ -1,0 +1,5 @@
+# deepseek-chan-sleep-shutdown bundle patch: insert the plugin row over the profile root.
+# The `name` resolves through the profile's node_modules after `dsh plugin add`.
+- insert:
+    - id: deepseek-chan-sleep-shutdown
+      name: 'deepseek-chan-sleep-shutdown'
