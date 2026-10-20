@@ -30,7 +30,9 @@
  *     into every index.html response (applies on the next page load), plus
  *     the webserver/index-inject event channel for hosts that prefer it.
  *   - HTTP routes under /api/deepseek-chan-sleep-shutdown/*:
- *     GET /state, POST /arm, POST /disarm, POST /cancel, GET /ui.js,
+ *     GET /state, POST /arm, POST /disarm, POST /cancel, POST /policy
+ *     (shutdown-condition setting, persisted to $DSH_HOME/<name>.json),
+ *     GET /ui.js,
  *     GET /img/sleep.webp, GET /img/awake.webp (served from ./assets;
  *     content-type image/webp, long cache. A failed image read is a plain
  *     404 and never affects the other routes).
@@ -66,6 +68,25 @@ function log(...args) {
   try { fs.appendFileSync(LOG_PATH, line + '\n', 'utf8') } catch { /* best-effort */ }
 }
 
+const SETTINGS_PATH = path.join(dshHome(), NAME + '.json')
+
+/** Persistent shutdown-condition setting ({ "onlyOnSuccess": bool }); absent/corrupt = null. */
+function readSettings() {
+  try {
+    const obj = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'))
+    return (obj && typeof obj === 'object' && typeof obj.onlyOnSuccess === 'boolean')
+      ? { onlyOnSuccess: obj.onlyOnSuccess }
+      : null
+  } catch { return null }
+}
+
+/** Best-effort write-back of the shutdown-condition setting. */
+function writeSettings(onlyOnSuccess) {
+  try {
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify({ onlyOnSuccess }, null, 2) + '\n', 'utf8')
+  } catch (err) { log('设置文件写入失败:', err && err.message ? err.message : err) }
+}
+
 /** Normalize plugin config (no schema dependency; defaults match the prototype). */
 function normalizeConfig(raw) {
   const c = (raw && typeof raw === 'object') ? raw : {}
@@ -96,6 +117,7 @@ const UI_JS = [
 "  var IMG_SLEEP = BASE + '/img/sleep.webp'",
 "  var IMG_AWAKE = BASE + '/img/awake.webp'",
 "  var btn = null, ring = null, mascot = null, label = null, banner = null, note = null, noteTimer = null",
+  "  var policy = null, optSucc = null, optAny = null, okNote = null, okTimer = null, lastPolicy = null",
 "  var suppressClick = false, dodging = false, drag = null, scanTimer = null, imgOk = true",
 "",
 "  function makeEl(tag, cls, text) {",
@@ -106,6 +128,7 @@ const UI_JS = [
 "  }",
 "  function setVisible(e, show) { if (e) e.style.display = show ? 'block' : 'none' }",
 "  function post(p) { return fetch(BASE + p, { method: 'POST' }).then(function (r) { return r.json() }).catch(function () { return null }) }",
+  "  function postBody(p, data) { return fetch(BASE + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) }).then(function (r) { return r.json() }).catch(function () { return null }) }",
 "  function setLook(sleeping, text) {",
 "    if (imgOk) mascot.src = sleeping ? IMG_SLEEP : IMG_AWAKE",
 "    if (label.textContent !== text) label.textContent = text",
@@ -146,13 +169,25 @@ const UI_JS = [
 "    'font-size:13px;color:#fff;background:linear-gradient(135deg,#e5484d,#c93a3f);box-shadow:0 0 12px rgba(229,72,77,.30)}',",
 "    '.dsh-dcs-panel .cancel:hover{background:linear-gradient(135deg,#f2555a,#d84348)}',",
 "    '.dsh-dcs-panel.warn .t{color:#ffd166}',",
-"    '.dsh-dcs-panel.err .t{color:#ff9aa2}'",
+"    '.dsh-dcs-panel.err .t{color:#ff9aa2}',",
+"    '.dsh-dcs-policy .opt{display:flex;align-items:center;gap:10px;cursor:pointer;margin-top:8px;padding:9px 10px;',",
+"    'border:1px solid rgba(139,143,245,.22);border-radius:10px;transition:border-color .2s,background .2s,box-shadow .2s}',",
+"    '.dsh-dcs-policy .opt:hover{border-color:rgba(139,143,245,.5)}',",
+"    '.dsh-dcs-policy .opt.sel{border-color:#8b8ff5;background:rgba(139,143,245,.13);box-shadow:0 0 10px rgba(139,143,245,.25)}',",
+"    '.dsh-dcs-policy .dot{width:14px;height:14px;border-radius:50%;border:2px solid rgba(139,143,245,.45);flex:0 0 14px;position:relative}',",
+"    '.dsh-dcs-policy .opt.sel .dot{border-color:#8b8ff5}',",
+"    '.dsh-dcs-policy .opt.sel .dot:after{content:\"\";position:absolute;inset:2px;border-radius:50%;background:#8b8ff5}',",
+"    '.dsh-dcs-policy .opt .tx{flex:1 1 auto}',",
+"    '.dsh-dcs-policy .opt .m{font-weight:600;font-size:13px}',",
+"    '.dsh-dcs-policy .opt .s{color:#b8bad4;font-size:12px}',",
+"    '.dsh-dcs-policy .ok{display:none;margin-top:8px;font-size:12px}'",
 "  ].join('')",
 "  document.head.appendChild(style)",
 "",
 "  // ---- capsule button: [mascot img][label][moon crescent] + Zzz + ring ----",
 "  btn = makeEl('button', 'dsh-dcs-btn')",
 "  btn.setAttribute('type', 'button')",
+"  btn.title = '任务完成后关机：左键开关，右键设置关机条件'",
 "  ring = makeEl('div', 'dsh-dcs-ring')",
 "  btn.appendChild(ring)",
 "  mascot = document.createElement('img')",
@@ -179,6 +214,29 @@ const UI_JS = [
 "",
 "  note = makeEl('div', 'dsh-dcs-panel warn')",
 "  document.body.appendChild(note)",
+
+"  // ---- shutdown-condition settings popup (right-click on the button) ----",
+"  policy = makeEl('div', 'dsh-dcs-panel dsh-dcs-policy')",
+"  policy.appendChild(makeEl('div', 't', '关机条件'))",
+"  policy.appendChild(makeEl('div', 'b', '决定任务结束后是否关机'))",
+"  function makeOpt(main, sub) {",
+"    var o = makeEl('div', 'opt')",
+"    o.appendChild(makeEl('span', 'dot'))",
+"    var tx = makeEl('span', 'tx')",
+"    tx.appendChild(makeEl('div', 'm', main))",
+"    tx.appendChild(makeEl('div', 's', sub))",
+"    o.appendChild(tx)",
+"    return o",
+"  }",
+"  optSucc = makeOpt('仅成功时关机', '有会话出错则不关机')",
+"  optAny = makeOpt('无论成败都关机', '任务结束就关机，含失败')",
+"  okNote = makeEl('div', 'ok', '')",
+"  policy.appendChild(optSucc)",
+"  policy.appendChild(optAny)",
+"  policy.appendChild(okNote)",
+"  optSucc.addEventListener('click', function (e) { e.stopPropagation(); choosePolicy(true) })",
+"  optAny.addEventListener('click', function (e) { e.stopPropagation(); choosePolicy(false) })",
+"  document.body.appendChild(policy)",
 "",
 "  // ---- restore saved drag position (clamped to the current viewport) ----",
 "  try {",
@@ -198,6 +256,7 @@ const UI_JS = [
 "  // ---- draggable: pointer events; a real drag suppresses the click ----",
 "  btn.addEventListener('pointerdown', function (e) {",
 "    if (e.button !== 0) return",
+"    suppressClick = false",
 "    undodge()",
 "    drag = { sx: e.clientX, sy: e.clientY, l: btn.offsetLeft, t: btn.offsetTop, moved: false }",
 "    try { btn.setPointerCapture(e.pointerId) } catch (err) { /* ignore */ }",
@@ -228,12 +287,22 @@ const UI_JS = [
 "    var on = btn.classList.contains('on')",
 "    post(on ? '/disarm' : '/arm').then(function (s) { if (s) applyState(s) })",
 "  })",
+"  // right-click opens the shutdown-condition popup; right-button pointerdown",
+"  // never enters drag (button !== 0), and browsers fire no click for it, so",
+"  // the flag below is belt-and-braces (reset on next left pointerdown).",
+"  btn.addEventListener('contextmenu', function (e) {",
+"    e.preventDefault()",
+"    e.stopPropagation()",
+"    suppressClick = true",
+"    openPolicy()",
+"  })",
 "",
-"  // ---- auto-dodge: step aside when another plugin's fixed popup with",
+"  // ---- auto-dodge: step aside when a foreign fixed popup with",
 "  //      clickable content overlaps our button; restore when it goes away ----",
 "  function isOurs(el) {",
-"    return el === btn || el === banner || el === note ||",
-"      (btn && btn.contains(el)) || (banner && banner.contains(el)) || (note && note.contains(el))",
+"    return el === btn || el === banner || el === note || el === policy ||",
+"      (btn && btn.contains(el)) || (banner && banner.contains(el)) || (note && note.contains(el)) ||",
+"      (policy && policy.contains(el))",
 "  }",
 "  function fixedOverlay(el) {",
 "    var cur = el",
@@ -304,7 +373,7 @@ const UI_JS = [
 "    mo.observe(document.body, { childList: true, subtree: true })",
 "  } catch (e) { /* ignore */ }",
 "",
-"  // ---- countdown/notice panel follows the button's current position ----",
+"  // ---- countdown/notice panel follows the current button position ----",
 "  function placePanel(panelEl) {",
 "    var r = btn.getBoundingClientRect()",
 "    var pw = panelEl.offsetWidth || 300",
@@ -332,9 +401,44 @@ const UI_JS = [
 "    clearTimeout(noteTimer)",
 "    noteTimer = setTimeout(function () { setVisible(note, false) }, ms || 6000)",
 "  }",
+"  function setPolicySel(v) {",
+"    if (v) { optSucc.classList.add('sel'); optAny.classList.remove('sel') }",
+"    else { optSucc.classList.remove('sel'); optAny.classList.add('sel') }",
+"  }",
+"  function showOk(text, good) {",
+"    okNote.textContent = text",
+"    okNote.style.color = good ? '#8b8ff5' : '#ff9aa2'",
+"    okNote.style.display = 'block'",
+"    clearTimeout(okTimer)",
+"    okTimer = setTimeout(function () { okNote.style.display = 'none' }, 1600)",
+"  }",
+"  function choosePolicy(v) {",
+"    if (lastPolicy === v) { showOk('已是当前设置', true); return }",
+"    postBody('/policy', { onlyOnSuccess: v }).then(function (s) {",
+"      if (!s || typeof s.onlyOnSuccess !== 'boolean') { showOk('保存失败，请重试', false); return }",
+"      lastPolicy = s.onlyOnSuccess",
+"      setPolicySel(s.onlyOnSuccess)",
+"      showOk('已保存', true)",
+"    })",
+"  }",
+"  function openPolicy() {",
+"    setPolicySel(lastPolicy)",
+"    setVisible(policy, true)",
+"    placePanel(policy)",
+"  }",
+"  function closePolicy() { setVisible(policy, false) }",
+"  document.addEventListener('click', function (e) {",
+"    if (!policy || policy.style.display !== 'block') return",
+"    if (policy.contains(e.target) || (btn && btn.contains(e.target))) return",
+"    closePolicy()",
+"  })",
+"  document.addEventListener('keydown', function (e) {",
+"    if (e.key === 'Escape') closePolicy()",
+"  })",
 "  window.addEventListener('resize', function () {",
 "    if (banner && banner.style.display === 'block') placePanel(banner)",
 "    if (note && note.style.display === 'block') placePanel(note)",
+"    if (policy && policy.style.display === 'block') placePanel(policy)",
 "    dodgeScan()",
 "  })",
 "",
@@ -359,6 +463,10 @@ const UI_JS = [
 "      setLook(!!s.armed, s.armed ? '已开启·任务完成后关机' : '任务完成后关机')",
 "      hideBanner()",
 "    }",
+"    if (typeof s.onlyOnSuccess === 'boolean') {",
+"      lastPolicy = s.onlyOnSuccess",
+"      setPolicySel(s.onlyOnSuccess)",
+"    }",
 "    if (s.lastSkip && (Date.now() - s.lastSkip.at) < 6000) {",
 "      showNote(s.lastSkip.reason, 6000)",
 "    }",
@@ -377,6 +485,7 @@ const UI_JS = [
 "      if (btn && !document.body.contains(btn)) document.body.appendChild(btn)",
 "      if (banner && !document.body.contains(banner)) document.body.appendChild(banner)",
 "      if (note && !document.body.contains(note)) document.body.appendChild(note)",
+"      if (policy && !document.body.contains(policy)) document.body.appendChild(policy)",
 "    } catch (e) { /* ignore */ }",
 "  }, 500)",
 "  }",
@@ -390,6 +499,12 @@ module.exports = {
   inject: ['agents', 'subprocess', 'webServer'],
   apply(ctx, rawConfig) {
     const cfg = normalizeConfig(rawConfig)
+    // Shutdown-condition setting: persisted in $DSH_HOME/<name>.json; a first
+    // mount (no file yet) seeds it from the cordis config (default: success only).
+    const savedSettings = readSettings()
+    if (savedSettings) cfg.onlyOnSuccess = savedSettings.onlyOnSuccess
+    else writeSettings(cfg.onlyOnSuccess)
+    log('关机条件：' + (cfg.onlyOnSuccess ? '仅成功时关机' : '无论成败都关机') + '（设置持久化于 ' + SETTINGS_PATH + '）')
 
     if (process.platform !== 'win32') {
       log('当前平台 ' + process.platform + ' 非 Windows（需要 shutdown.exe），插件保持惰性')
@@ -540,8 +655,16 @@ module.exports = {
         if (origin === undefined) return true
         try { const u = new URL(origin); return u.hostname === '127.0.0.1' || u.hostname === 'localhost' } catch { return false }
       }
+      const readBody = (req) => new Promise((resolve) => {
+        let buf = ''
+        req.setEncoding('utf8')
+        req.on('data', (c) => { if (buf.length < 8192) buf += c })
+        req.on('end', () => resolve(buf))
+        req.on('error', () => resolve(''))
+      })
       const statePayload = () => ({
         armed, state, deadline, countdownSec: cfg.countdownSec, erroredCount: errored.size, lastSkip,
+        onlyOnSuccess: cfg.onlyOnSuccess,
       })
 
       disposers.push(webServer.register({
@@ -559,6 +682,21 @@ module.exports = {
       disposers.push(webServer.register({
         kind: 'exact', path: BASE + '/cancel',
         handler: (req, res) => { if (!originOk(req)) return json(res, 403, { error: 'origin rejected' }); const ok = cancelShutdown(); json(res, 200, { ok, ...statePayload() }) },
+      }))
+      disposers.push(webServer.register({
+        kind: 'exact', path: BASE + '/policy',
+        handler: async (req, res) => {
+          if (!originOk(req)) return json(res, 403, { error: 'origin rejected' })
+          let body = null
+          try { body = JSON.parse(await readBody(req)) } catch { body = null }
+          if (!body || typeof body !== 'object' || typeof body.onlyOnSuccess !== 'boolean') {
+            return json(res, 400, { error: 'expected JSON body { "onlyOnSuccess": boolean }' })
+          }
+          cfg.onlyOnSuccess = body.onlyOnSuccess
+          writeSettings(cfg.onlyOnSuccess)
+          log('关机条件已切换为：' + (cfg.onlyOnSuccess ? '仅成功时关机' : '无论成败都关机'))
+          json(res, 200, statePayload())
+        },
       }))
       disposers.push(webServer.register({
         kind: 'exact', path: BASE + '/ui.js',

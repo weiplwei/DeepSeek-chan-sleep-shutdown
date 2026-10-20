@@ -38,6 +38,11 @@ cancellable countdown.
   shutdown while keeping the mode armed
 - **Cancel exits the mode**
 - **Success-only**: a batch with ```agent/error``` is skipped (banner notice)
+- **Right-click settings — shutdown condition**: right-click the button to open
+  the "关机条件" (shutdown condition) popup (night-styled card): "仅成功时关机"
+  (success only) / "无论成败都关机" (shutdown regardless of outcome); the choice
+  takes effect immediately and is persisted to
+  ```$DSH_HOME/deepseek-chan-sleep-shutdown.json``` across DSH restarts
 - **Multi-session aware**: "task complete" = all root sessions idle
 - **SPA self-heal**: a 500 ms interval re-attaches the button/banner if a
   front-end re-render dropped them

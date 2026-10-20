@@ -8,6 +8,7 @@ deepseek-chan-sleep-shutdown 的完整前端：
 - `GET /api/deepseek-chan-sleep-shutdown/img/sleep.webp` / `awake.webp` — 读包内 assets（缺失 404，按钮降级）
 - `GET /api/deepseek-chan-sleep-shutdown/state` — mock 状态 JSON
 - `POST /arm` / `/disarm` / `/cancel` — 更新 mock 状态
+- `POST /policy` — 更新 mock 的关机条件（`{"onlyOnSuccess":bool}`，非法 body → 400）
 - `POST /demo-countdown` / `/demo-fired` — 演示倒计时进度环与 fired 横幅
 
 ## 启动 / Launch
@@ -32,6 +33,16 @@ exit 0 = 注入脚本可执行（HTTP 200 本身不证明 JS 可执行，验收�
 - 点按钮 / POST /arm：入睡形象 + 呼吸光晕 + Zzz + 月牙点亮
 - POST /demo-countdown：按钮外圈 conic-gradient 进度环 + 按钮上剩余秒数
 - POST /cancel：横幅消失、回到空闲
+
+## 关机条件持久化单测 / Policy persistence test
+
+```sh
+node test/harness/policy-persist.test.js
+```
+
+用临时 `DSH_HOME` 挂载真实 index.js：首次挂载播种设置文件 → POST /policy 切到
+false → 断言写盘 → 二次挂载断言从磁盘读回 false；非法 body / 非 loopback Origin
+均断言 400/403。exit 0 = 全部通过。
 
 ## English
 

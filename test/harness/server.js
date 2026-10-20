@@ -23,11 +23,13 @@ const mock = {
   countdownSec: 60,
   erroredCount: 0,
   lastSkip: null,
+  onlyOnSuccess: true, // shutdown-condition policy (in-memory in the mock)
 }
 function statePayload() {
   return {
     armed: mock.armed, state: mock.state, deadline: mock.deadline,
     countdownSec: mock.countdownSec, erroredCount: mock.erroredCount, lastSkip: mock.lastSkip,
+    onlyOnSuccess: mock.onlyOnSuccess,
   }
 }
 function startCountdown() {
@@ -37,6 +39,15 @@ function startCountdown() {
 function json(res, body) {
   res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
   res.end(JSON.stringify(body))
+}
+function readBody(req) {
+  return new Promise((resolve) => {
+    let buf = ''
+    req.setEncoding('utf8')
+    req.on('data', (c) => { if (buf.length < 8192) buf += c })
+    req.on('end', () => resolve(buf))
+    req.on('error', () => resolve(''))
+  })
 }
 function serveImage(res, fileName) {
   try {
@@ -134,6 +145,20 @@ const server = http.createServer((req, res) => {
     json(res, statePayload())
     return
   }
+  if (req.method === 'POST' && u === '/policy') {
+    readBody(req).then((raw) => {
+      let body = null
+      try { body = JSON.parse(raw) } catch { body = null }
+      if (!body || typeof body !== 'object' || typeof body.onlyOnSuccess !== 'boolean') {
+        res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ error: 'expected JSON body { "onlyOnSuccess": boolean }' }))
+        return
+      }
+      mock.onlyOnSuccess = body.onlyOnSuccess
+      json(res, statePayload())
+    })
+    return
+  }
   if (req.method === 'POST' && u === '/cancel') {
     mock.armed = false
     mock.state = 'idle'
@@ -150,5 +175,5 @@ server.listen(0, '127.0.0.1', () => {
   console.log('deepseek-chan-sleep-shutdown harness: http://127.0.0.1:' + port)
   console.log('  routes: GET /  GET ' + BASE + '/ui.js  GET ' + BASE + '/state')
   console.log('          GET ' + BASE + '/img/sleep.webp  GET ' + BASE + '/img/awake.webp')
-  console.log('          POST ' + BASE + '/arm  /disarm  /cancel  /demo-countdown  /demo-fired')
+  console.log('          POST ' + BASE + '/arm  /disarm  /cancel  /policy  /demo-countdown  /demo-fired')
 })
