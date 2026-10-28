@@ -118,7 +118,7 @@ const UI_JS = [
 "  var IMG_AWAKE = BASE + '/img/awake.webp'",
 "  var btn = null, ring = null, mascot = null, label = null, banner = null, note = null, noteTimer = null",
   "  var policy = null, optSucc = null, optAny = null, okNote = null, okTimer = null, lastPolicy = null",
-"  var suppressClick = false, dodging = false, drag = null, scanTimer = null, imgOk = true",
+"  var suppressClick = false, dodging = false, dodgeEl = null, drag = null, scanTimer = null, imgOk = true",
 "",
 "  function makeEl(tag, cls, text) {",
 "    var e = document.createElement(tag)",
@@ -326,9 +326,9 @@ const UI_JS = [
 "    var h = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top))",
 "    return w * h",
 "  }",
-"  function findIntruder() {",
+"  function findIntruder(r) {",
 "    if (!btn) return null",
-"    var r = btn.getBoundingClientRect()",
+"    if (!r) return null",
 "    if (r.width < 4 || r.height < 4) return null",
 "    var pts = [",
 "      [r.left + r.width / 2, r.top + r.height / 2],",
@@ -348,21 +348,34 @@ const UI_JS = [
 "    }",
 "    return null",
 "  }",
+"  function baseRect() {",
+"    var prev = btn.style.transform",
+"    btn.style.transform = ''",
+"    var r = btn.getBoundingClientRect()",
+"    btn.style.transform = prev",
+"    return r",
+"  }",
 "  function undodge() {",
-"    if (dodging) { btn.style.transform = ''; dodging = false }",
+"    if (dodging) { btn.style.transform = ''; dodging = false; dodgeEl = null }",
 "  }",
 "  function dodgeScan() {",
 "    if (!btn || drag) return",
-"    var intr = findIntruder()",
-"    if (intr && !dodging) {",
-"      var br = btn.getBoundingClientRect()",
-"      var ir = intr.getBoundingClientRect()",
-"      var off = Math.max(0, br.bottom - ir.top) + 14",
-"      btn.style.transform = 'translateY(-' + off + 'px)'",
-"      dodging = true",
-"    } else if (!intr && dodging) {",
+"    // 在未避让的原位检测遮挡：避让状态有粘性，只有原位上的遮挡真正",
+"    // 消失才归位；否则常驻面板（如设置页）会让按钮在原位与避让位之间振荡",
+"    var r = baseRect()",
+"    var intr = findIntruder(r)",
+"    if (intr) {",
+"      if (!dodging || intr !== dodgeEl) {",
+"        dodgeEl = intr",
+"        var ir = intr.getBoundingClientRect()",
+"        var off = Math.max(0, Math.min(r.bottom - ir.top + 14, r.top - 8))",
+"        btn.style.transform = 'translateY(-' + off + 'px)'",
+"        dodging = true",
+"      }",
+"    } else if (dodging) {",
 "      btn.style.transform = ''",
 "      dodging = false",
+"      dodgeEl = null",
 "    }",
 "  }",
 "  try {",
@@ -653,7 +666,12 @@ module.exports = {
       const originOk = (req) => {
         const origin = req.headers.origin
         if (origin === undefined) return true
-        try { const u = new URL(origin); return u.hostname === '127.0.0.1' || u.hostname === 'localhost' } catch { return false }
+        try {
+          const u = new URL(origin)
+          if (u.hostname === '127.0.0.1' || u.hostname === 'localhost') return true
+          // Electron desktop shell serves the UI from the dsh-app://app origin
+          return u.protocol === 'dsh-app:' && u.hostname === 'app'
+        } catch { return false }
       }
       const readBody = (req) => new Promise((resolve) => {
         let buf = ''
