@@ -40,7 +40,7 @@
  *
  * Events (per @deepseek-ai/dsh-agent runtime-types):
  *   agent/status { agent, status: 'idle' | 'running' }; agent/error { agent, ... }
- * Only root agents (agents.roots()) count; subagents are folded into their root.
+ * Only root agents (subagent-tree roots) count; subagents are folded into their root.
  *
  * Windows only: the plugin executes shutdown.exe. On other platforms it logs
  * and stays inert.
@@ -515,7 +515,7 @@ const UI_JS = [
 
 module.exports = {
   name: NAME,
-  inject: ['agents', 'subprocess', 'webServer'],
+  inject: ['agents', 'subagents', 'subprocess', 'webServer'],
   apply(ctx, rawConfig) {
     const cfg = normalizeConfig(rawConfig)
     // Shutdown-condition setting: persisted in $DSH_HOME/<name>.json; a first
@@ -546,14 +546,38 @@ module.exports = {
     let firedTimer = null
     let lastSkip = null        // { at, reason } most recent "errored, skipped" notice
 
+    // Root detection, version-tolerant (DSH >= 0.2.2 removed agents.roots()):
+    //   1. agents.roots() when the host still provides it;
+    //   2. subagents.rootOf(agent) === agent — the runtime-owner resolver;
+    //   3. fallback: a live agent (agents.list()) is a root when it has no
+    //      resolvable creator, i.e. its session origin is not "subagent".
+    // rootOf throws UNAUTHORIZED for descendants, so treat any throw from it as
+    // "not a root" only when the agent is at least live; unknown agents are
+    // ignored rather than assumed root.
+    const subagents = ctx.get('subagents')
+    function isRoot(agent) {
+      if (!agent) return false
+      try {
+        if (agents.get(agent.id) !== agent) return false // not a live agent
+      } catch { return false }
+      try {
+        if (typeof agents.roots === 'function') return agents.roots().includes(agent)
+      } catch { /* fall through to subagents.rootOf */ }
+      try {
+        if (subagents && typeof subagents.rootOf === 'function') {
+          return subagents.rootOf(agent) === agent
+        }
+      } catch { return false } // rootOf rejects descendants: not a root
+      // Fallback without subagents: session origin "subagent" marks a child.
+      try {
+        return agent.session && agent.session.header && agent.session.header.origin !== 'subagent'
+      } catch { return false }
+    }
     function roots() {
-      try { return agents.roots() } catch { return [] }
+      try { return agents.list().filter(isRoot) } catch { return [] }
     }
     function rootsRunning() {
       try { return roots().filter((a) => a && a.status === 'running').length } catch { return 0 }
-    }
-    function isRoot(agent) {
-      try { return roots().includes(agent) } catch { return true }
     }
 
     async function spawnShutdown(args) {
